@@ -294,8 +294,8 @@ def export_to_excel():
  U_DESCRIPTION, U_CONFIRM) = range(15)
 
 (A_MENU, A_OBJ_NAME, A_OBJ_ADDR, A_OBJ_TYPE,
- A_BP_NAME, A_SEL_BP, A_TASK_NAME,
- A_SEL_TASK, A_PROC_NAME) = range(100, 109)
+ A_BP_NAME, A_BP_TASK_NAME, A_SEL_BP, A_TASK_NAME,
+ A_SEL_TASK, A_PROC_NAME) = range(100, 110)
 
 # Состояния диалога планировщика
 P_DATE, P_TITLE, P_OBJECT, P_BP, P_TASK, P_ASSIGNEE, P_TIME_START, P_TIME_END, P_CONFIRM = range(200, 209)
@@ -500,60 +500,60 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_info(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Команда /info — задачи на день и текущая активная задача."""
-    today  = datetime.now().strftime("%d.%m.%Y")
-    now_t  = datetime.now().strftime("%H:%M")
-    uid    = str(update.effective_user.id)
+    today = datetime.now().strftime("%d.%m.%Y")
+    now_t = datetime.now().strftime("%H:%M")
+    uid   = str(update.effective_user.id)
 
     with get_db() as db:
-        # Плановые задачи на сегодня для этого пользователя
         planned = db.execute("""
             SELECT * FROM planned_tasks
             WHERE planned_date=? AND assignee_tg_id=?
             ORDER BY planned_time, id
         """, (today, uid)).fetchall()
 
-        # Последняя незакрытая запись из work_log (у кого нет time_end сегодня —
-        # считаем потенциально активной, если последняя запись за сегодня)
         last_work = db.execute("""
             SELECT * FROM work_log
             WHERE date=? AND employee_tg_id=?
-            ORDER BY id DESC LIMIT 1
+            ORDER BY id DESC LIMIT 1 
         """, (today, uid)).fetchone()
+
+        # Все записи /start за сегодня этого пользователя
+        work_today = db.execute("""
+            SELECT bp_name, task_name, object_name, time_start, time_end, duration_h
+            FROM work_log
+            WHERE date=? AND employee_tg_id=?
+            ORDER BY id
+        """, (today, uid)).fetchall()
 
     lines = [f"Статус дня ({today})  {now_t}\n"]
 
-    # Активная задача (последняя записанная сегодня)
-    if last_work:
-        lines.append(
-            f"Последняя выполненная задача:\n"
-            f"  {last_work['bp_name']} — {last_work['task_name']}\n"
-            f"  {last_work['object_name']}\n"
-            f"  {last_work['time_start']} — {last_work['time_end']}  "
-            f"({last_work['duration_h']} ч)\n"
-        )
+    if work_today:
+        lines.append(f"Выполненных задач сегодня: {len(work_today)}")
+        for w in work_today:
+            lines.append(
+                f"  ✅ {w['bp_name']} — {w['task_name']}\n"
+                f"     {w['object_name']}  {w['time_start']}–{w['time_end']}  ({w['duration_h']} ч)"
+            )
+        lines.append("")
     else:
-        lines.append("Сегодня ещё нет зафиксированных задач.\n")
+        lines.append("Сегодня ещё нет зафиксированных задач (/start).\n")
 
-    # Плановые задачи
     if planned:
         icons = {"Запланирована":"🔵","Выполнена":"✅","В процессе":"🔄","Не выполнена":"❌"}
-        lines.append("\nРасписание на сегодня:")
+        lines.append("Расписание на сегодня:")
         for t in planned:
             tp   = f" {t['planned_time']}" if t["planned_time"] else ""
             icon = icons.get(t["status"], "•")
             lines.append(f"  {icon} {t['title']}{tp}")
             if t["object_name"]:
                 lines.append(f"     Объект: {t['object_name']}")
-
         done  = sum(1 for t in planned if t["status"] == "Выполнена")
         total = len(planned)
-        lines.append(f"\nВыполнено: {done} из {total}")
+        lines.append(f"\nВыполнено по расписанию: {done} из {total}")
     else:
-        lines.append("\nПлановых задач на сегодня нет.\n/plan — добавить задачу")
+        lines.append("Плановых задач на сегодня нет.\n/plan — добавить задачу")
 
     await update.message.reply_text("\n".join(lines))
-
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
     ctx.user_data["date"]           = datetime.now().strftime("%d.%m.%Y")
@@ -947,12 +947,14 @@ async def adm_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if d == "A_PROC":
         with get_db() as db:
-            tasks = db.execute("""SELECT t.id, t.name, b.name as bn
-                FROM tasks_ref t JOIN bp b ON b.id=t.bp_id
-                WHERE t.active=1 ORDER BY b.name, t.name""").fetchall()
-        rows = [[InlineKeyboardButton(f"{t['bn']} > {t['name']}", callback_data=f"ST_{t['id']}")] for t in tasks[:30]]
-        await q.edit_message_text("Выбери задачу:", reply_markup=InlineKeyboardMarkup(rows))
-        return A_SEL_TASK
+            bps = db.execute("SELECT id, name FROM bp WHERE active=1 ORDER BY name").fetchall()
+        rows = [[InlineKeyboardButton(b["name"], callback_data=f"SBP_{b['id']}")] for b in bps]
+        await q.edit_message_text(
+            "Добавление процедуры\n\nШаг 1 — выбери БП:",
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        ctx.user_data["_proc_mode"] = True
+        return A_SEL_BP
 
     if d == "A_LBP":
         with get_db() as db:
@@ -1021,13 +1023,41 @@ async def adm_bp_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     name = update.message.text.strip()
     with get_db() as db:
         if db.execute("SELECT id FROM bp WHERE name=?", (name,)).fetchone():
-            await update.message.reply_text(f"БП {name} уже существует.")
-        else:
-            db.execute("INSERT INTO bp (name) VALUES (?)", (name,))
-            db.commit()
-            await update.message.reply_text(f"БП {name} добавлен!")
-    await update.message.reply_text("Выбери действие:", reply_markup=amenu_kb())
-    return A_MENU
+            await update.message.reply_text(f"БП «{name}» уже существует.")
+            await update.message.reply_text("Выбери действие:", reply_markup=amenu_kb())
+            return A_MENU
+        db.execute("INSERT INTO bp (name) VALUES (?)", (name,))
+        db.commit()
+        bp_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+    ctx.user_data["_tbp"] = bp_id
+    ctx.user_data["_tbp_name"] = name
+    await update.message.reply_text(
+        f"БП «{name}» добавлен!\n\n"
+        "Теперь добавь задачи этого БП.\n"
+        "Введи название первой задачи\n"
+        "(или - чтобы пропустить и закончить):"
+    )
+    return A_BP_TASK_NAME
+
+
+async def adm_bp_task_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    name  = update.message.text.strip()
+    bp_id = ctx.user_data.get("_tbp")
+    bp_nm = ctx.user_data.get("_tbp_name", "")
+    if name == "-":
+        await update.message.reply_text(
+            f"Готово! БП «{bp_nm}» сохранён.\n"
+            "Выбери действие:", reply_markup=amenu_kb()
+        )
+        return A_MENU
+    with get_db() as db:
+        db.execute("INSERT INTO tasks_ref (bp_id, name) VALUES (?,?)", (bp_id, name))
+        db.commit()
+    await update.message.reply_text(
+        f"Задача «{name}» добавлена к БП «{bp_nm}».\n\n"
+        "Введи следующую задачу или - чтобы закончить:"
+    )
+    return A_BP_TASK_NAME
 
 
 async def adm_sel_bp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1036,9 +1066,25 @@ async def adm_sel_bp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     bp_id = int(q.data.replace("SBP_", ""))
     ctx.user_data["_tbp"] = bp_id
     with get_db() as db:
-        bp = db.execute("SELECT name FROM bp WHERE id=?", (bp_id,)).fetchone()
-    await q.edit_message_text(f"БП: {bp['name']}\n\nВведи название задачи:")
-    return A_TASK_NAME
+        bp    = db.execute("SELECT name FROM bp WHERE id=?", (bp_id,)).fetchone()
+        tasks = db.execute(
+            "SELECT id, name FROM tasks_ref WHERE bp_id=? AND active=1 ORDER BY name",
+            (bp_id,)
+        ).fetchall()
+    ctx.user_data["_tbp_name"] = bp["name"] if bp else ""
+
+    if ctx.user_data.get("_proc_mode"):
+        # Режим добавления процедуры — выбираем задачу
+        rows = [[InlineKeyboardButton(t["name"], callback_data=f"ST_{t['id']}")] for t in tasks]
+        await q.edit_message_text(
+            f"БП: {bp['name']}\n\nШаг 2 — выбери задачу:",
+            reply_markup=InlineKeyboardMarkup(rows)
+        )
+        return A_SEL_TASK
+    else:
+        # Режим добавления задачи — сразу вводим название
+        await q.edit_message_text(f"БП: {bp['name']}\n\nВведи название задачи:")
+        return A_TASK_NAME
 
 
 async def adm_task_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1069,7 +1115,11 @@ async def adm_proc_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     with get_db() as db:
         db.execute("INSERT INTO procedures (task_id, name) VALUES (?,?)", (task_id, name))
         db.commit()
-    await update.message.reply_text(f"Процедура {name} добавлена!")
+    ctx.user_data.pop("_proc_mode", None)  # сбрасываем режим
+    ctx.user_data.pop("_tt", None)
+    ctx.user_data.pop("_tbp", None)
+    ctx.user_data.pop("_tbp_name", None)
+    await update.message.reply_text(f"Процедура «{name}» добавлена!")
     await update.message.reply_text("Выбери действие:", reply_markup=amenu_kb())
     return A_MENU
 
@@ -1120,11 +1170,11 @@ def save_plan(d: dict) -> int:
         db.execute("""
             INSERT INTO planned_tasks
                 (title, object_name, assignee_name, assignee_tg_id,
-                 planned_date, planned_time,
+                 planned_date, planned_time, planned_time_end,
                  bp_name, task_ref_name,
                  status, day_status, consistency,
                  created_by, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             d["title"],
             d.get("object_name", ""),
@@ -1132,6 +1182,7 @@ def save_plan(d: dict) -> int:
             d.get("assignee_tg_id", ""),
             d["planned_date"],
             d.get("planned_time", ""),
+            d.get("planned_time_end", ""),
             d.get("bp_name", ""),
             d.get("task_ref_name", ""),
             "Запланирована", "", "Согласована",
@@ -1654,6 +1705,9 @@ async def plan_status_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_reschedule_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    # Ранний выход если нет активных флагов ожидания
+    if not ctx.user_data.get("_await_reschedule") and not ctx.user_data.get("_await_fail_reason"):
+        return
     """Обрабатывает текстовый ввод для переноса / причины."""
     if ctx.user_data.get("_await_reschedule"):
         task_id  = ctx.user_data.pop("_reschedule_id", None)
@@ -1734,27 +1788,40 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "SELECT status, COUNT(*) as cnt FROM planned_tasks WHERE planned_date=? GROUP BY status",
             (today,)
         ).fetchall()}
-        total_all = db.execute("SELECT COUNT(*) FROM planned_tasks").fetchone()[0]
-        done_all  = db.execute("SELECT COUNT(*) FROM planned_tasks WHERE status='Выполнена'").fetchone()[0]
-        top = db.execute("""
+        total_all  = db.execute("SELECT COUNT(*) FROM planned_tasks").fetchone()[0]
+        done_all   = db.execute("SELECT COUNT(*) FROM planned_tasks WHERE status='Выполнена'").fetchone()[0]
+        top        = db.execute("""
             SELECT assignee_name, COUNT(*) as cnt,
                    SUM(CASE WHEN status='Выполнена' THEN 1 ELSE 0 END) as done
             FROM planned_tasks WHERE planned_date=?
             GROUP BY assignee_name ORDER BY cnt DESC
         """, (today,)).fetchall()
+        # Выполненные задачи из /start за сегодня
+        work_today = db.execute("""
+            SELECT employee_name, COUNT(*) as cnt, SUM(duration_h) as total_h
+            FROM work_log WHERE date=?
+            GROUP BY employee_name ORDER BY cnt DESC
+        """, (today,)).fetchall()
+        work_total = db.execute("SELECT COUNT(*) FROM work_log WHERE date=?", (today,)).fetchone()[0]
+
     lines = [
         f"Статистика задач ({today})\n",
-        f"Запланировано:  {by_status.get('Запланирована',0)}",
-        f"В процессе:     {by_status.get('В процессе',0)}",
-        f"Выполнено:      {by_status.get('Выполнена',0)}",
-        f"Не выполнено:   {by_status.get('Не выполнена',0)}",
-        f"\nВсего в базе:   {total_all}",
-        f"Выполнено всего:{done_all}",
+        "— Расписание (planned_tasks) —",
+        f"  Запланировано:  {by_status.get('Запланирована', 0)}",
+        f"  В процессе:     {by_status.get('В процессе', 0)}",
+        f"  Выполнено:      {by_status.get('Выполнена', 0)}",
+        f"  Не выполнено:   {by_status.get('Не выполнена', 0)}",
+        f"\n— Зафиксированных задач /start за сегодня: {work_total} —",
     ]
+    if work_today:
+        for w in work_today:
+            h = round(w["total_h"] or 0, 2)
+            lines.append(f"  {w['employee_name']}: {w['cnt']} задач  ({h} ч)")
     if top:
-        lines.append("\nПо исполнителям сегодня:")
+        lines.append("\nПо расписанию — исполнители:")
         for t in top:
             lines.append(f"  {t['assignee_name']}: {t['cnt']} задач, выполнено {t['done']}")
+    lines.append(f"\nВсего в базе planned: {total_all}, выполнено: {done_all}")
     lines.append("\n/tasks — задачи на сегодня\n/week — задачи на неделю")
     await update.message.reply_text("\n".join(lines))
 
@@ -1788,15 +1855,16 @@ def build_app() -> Application:
     admin_conv = ConversationHandler(
         entry_points=[CommandHandler("admin", cmd_admin)],
         states={
-            A_MENU:      [CallbackQueryHandler(adm_menu)],
-            A_OBJ_NAME:  [MessageHandler(filters.TEXT & ~filters.COMMAND, adm_obj_name)],
-            A_OBJ_ADDR:  [MessageHandler(filters.TEXT & ~filters.COMMAND, adm_obj_addr)],
-            A_OBJ_TYPE:  [CallbackQueryHandler(adm_obj_type, pattern="^AT_")],
-            A_BP_NAME:   [MessageHandler(filters.TEXT & ~filters.COMMAND, adm_bp_name)],
-            A_SEL_BP:    [CallbackQueryHandler(adm_sel_bp,   pattern="^SBP_")],
-            A_TASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, adm_task_name)],
-            A_SEL_TASK:  [CallbackQueryHandler(adm_sel_task, pattern="^ST_")],
-            A_PROC_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, adm_proc_name)],
+            A_MENU:         [CallbackQueryHandler(adm_menu)],
+            A_OBJ_NAME:     [MessageHandler(filters.TEXT & ~filters.COMMAND, adm_obj_name)],
+            A_OBJ_ADDR:     [MessageHandler(filters.TEXT & ~filters.COMMAND, adm_obj_addr)],
+            A_OBJ_TYPE:     [CallbackQueryHandler(adm_obj_type, pattern="^AT_")],
+            A_BP_NAME:      [MessageHandler(filters.TEXT & ~filters.COMMAND, adm_bp_name)],
+            A_BP_TASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, adm_bp_task_name)],
+            A_SEL_BP:       [CallbackQueryHandler(adm_sel_bp,   pattern="^SBP_")],
+            A_TASK_NAME:    [MessageHandler(filters.TEXT & ~filters.COMMAND, adm_task_name)],
+            A_SEL_TASK:     [CallbackQueryHandler(adm_sel_task, pattern="^ST_")],
+            A_PROC_NAME:    [MessageHandler(filters.TEXT & ~filters.COMMAND, adm_proc_name)],
         },
         fallbacks=[CommandHandler("cancel", cmd_cancel)],
         allow_reentry=True,
