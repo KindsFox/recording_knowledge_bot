@@ -15,7 +15,6 @@ from telegram.ext import (
     ContextTypes, ConversationHandler, MessageHandler, filters,
 )
 
-
 # Конфиг
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
@@ -105,7 +104,11 @@ def init_db():
             created_by     TEXT DEFAULT '',
             created_at     TEXT DEFAULT '',
             reminded_2h    INTEGER DEFAULT 0,
-            reminded_day   INTEGER DEFAULT 0
+            reminded_day   INTEGER DEFAULT 0,
+            bp_name        TEXT DEFAULT '',
+            task_ref_name  TEXT DEFAULT '',
+            fail_reason    TEXT DEFAULT '',
+            rescheduled_to TEXT DEFAULT ''
         );
         """)
         if not db.execute("SELECT 1 FROM bp LIMIT 1").fetchone():
@@ -295,7 +298,9 @@ def export_to_excel():
  A_SEL_TASK, A_PROC_NAME) = range(100, 109)
 
 # Состояния диалога планировщика
-P_TITLE, P_OBJECT, P_ASSIGNEE, P_DATE, P_TIME, P_CONFIRM = range(200, 206)
+P_DATE, P_TITLE, P_OBJECT, P_BP, P_TASK, P_ASSIGNEE, P_TIME_START, P_TIME_END, P_CONFIRM = range(200, 209)
+# Состояния обработки невыполненной задачи
+PS_FAIL_REASON, PS_RESCHEDULE_DATE = range(300, 302)
 
 
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -570,7 +575,7 @@ async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# Объект
+# Объект 
 async def u_object(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -674,7 +679,7 @@ async def u_obj_new_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return U_BP
 
 
-# БП
+# БП 
 async def u_bp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -734,7 +739,7 @@ async def u_task_custom(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return U_PROC_CUSTOM
 
 
-# Процедура
+# Процедура 
 async def u_procedure(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -764,7 +769,7 @@ async def u_proc_custom(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return U_TIME_START
 
 
-# Время
+# Время 
 async def u_time_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     try:
@@ -800,7 +805,7 @@ async def u_time_end(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return U_COWORKERS
 
 
-# Коллеги
+# Коллеги 
 async def u_coworkers(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -1081,15 +1086,45 @@ def plan_status_kb(task_id: int) -> InlineKeyboardMarkup:
     ])
 
 
+def fail_reason_kb(task_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔁 Перенести на другой день", callback_data=f"PF_move_{task_id}")],
+        [InlineKeyboardButton("✏️ Нужно исправить",          callback_data=f"PF_fix_{task_id}")],
+    ])
+
+
+def _date_from_text(text: str):
+    from datetime import timedelta
+    t = text.strip().lower()
+    if t in ("сегодня", "today"):
+        return datetime.now().strftime("%d.%m.%Y")
+    if t in ("завтра", "tomorrow"):
+        return (datetime.now() + timedelta(days=1)).strftime("%d.%m.%Y")
+    try:
+        return datetime.strptime(t, "%d.%m.%Y").strftime("%d.%m.%Y")
+    except ValueError:
+        return None
+
+
+def _is_past_date(date_str: str) -> bool:
+    try:
+        d = datetime.strptime(date_str, "%d.%m.%Y")
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        return d < today
+    except ValueError:
+        return False
+
+
 def save_plan(d: dict) -> int:
     with get_db() as db:
         db.execute("""
             INSERT INTO planned_tasks
                 (title, object_name, assignee_name, assignee_tg_id,
                  planned_date, planned_time,
+                 bp_name, task_ref_name,
                  status, day_status, consistency,
                  created_by, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             d["title"],
             d.get("object_name", ""),
@@ -1097,6 +1132,8 @@ def save_plan(d: dict) -> int:
             d.get("assignee_tg_id", ""),
             d["planned_date"],
             d.get("planned_time", ""),
+            d.get("bp_name", ""),
+            d.get("task_ref_name", ""),
             "Запланирована", "", "Согласована",
             d.get("created_by", ""),
             datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
@@ -1137,7 +1174,8 @@ def get_week_plans():
         ).fetchall()
 
 
-# Напоминания
+# Напоминания 
+
 async def _remind_job(context: ContextTypes.DEFAULT_TYPE):
     now   = datetime.now()
     today = now.strftime("%d.%m.%Y")
@@ -1214,13 +1252,38 @@ def _start_scheduler(app: Application):
     app.job_queue.run_repeating(_remind_job, interval=300, first=10)
 
 
-# Диалог /plan
+# Диалог /plan 
 async def cmd_plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["_p"] = {}
+    # Шаг 1 — сначала ДАТА (не в прошлом)
+    from datetime import timedelta
+    today = datetime.now().strftime("%d.%m.%Y")
+    tmr   = (datetime.now() + timedelta(days=1)).strftime("%d.%m.%Y")
     await update.message.reply_text(
         "Новая задача в расписание\n\n"
-        "Шаг 1 из 5 — Название задачи\n"
-        "Например: Запуск котельной, Монтаж котла, Встреча с клиентом Ивановым"
+        "Шаг 1 из 8 — Выбери дату\n"
+        f"Сегодня: {today}\n"
+        "Введи: сегодня / завтра / ДД.ММ.ГГГГ\n"
+        "(Дата в прошлом не принимается)"
+    )
+    return P_DATE
+
+
+async def p_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    date_str = _date_from_text(update.message.text)
+    if not date_str:
+        await update.message.reply_text("Неверный формат. Введи: сегодня / завтра / ДД.ММ.ГГГГ")
+        return P_DATE
+    if _is_past_date(date_str):
+        await update.message.reply_text(
+            f"Дата {date_str} уже прошла. Введи сегодня или будущую дату:"
+        )
+        return P_DATE
+    ctx.user_data["_p"]["planned_date"] = date_str
+    await update.message.reply_text(
+        f"Дата: {date_str}\n\n"
+        "Шаг 2 из 8 — Название задачи\n"
+        "Например: Монтаж котла, Встреча с клиентом Ивановым"
     )
     return P_TITLE
 
@@ -1232,12 +1295,14 @@ async def p_title(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return P_TITLE
     ctx.user_data["_p"]["title"] = title
     with get_db() as db:
-        objs = db.execute("SELECT id, name FROM objects ORDER BY name").fetchall()
+        objs = db.execute(
+            "SELECT id, name FROM objects WHERE status != 'Сдан' ORDER BY name"
+        ).fetchall()
     rows = [[InlineKeyboardButton(f"📍 {o['name']}", callback_data=f"PO_{o['id']}")] for o in objs]
     rows.append([InlineKeyboardButton("Без объекта / пропустить", callback_data="PO_SKIP")])
     await update.message.reply_text(
         f"Задача: {title}\n\n"
-        "Шаг 2 из 5 — Объект:",
+        "Шаг 3 из 8 — Объект:",
         reply_markup=InlineKeyboardMarkup(rows),
     )
     return P_OBJECT
@@ -1248,24 +1313,88 @@ async def p_object(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     if q.data == "PO_SKIP":
         ctx.user_data["_p"]["object_name"] = ""
+        ctx.user_data["_p"]["object_id"]   = None
     else:
         obj_id = int(q.data.replace("PO_", ""))
         with get_db() as db:
-            obj = db.execute("SELECT name FROM objects WHERE id=?", (obj_id,)).fetchone()
+            obj = db.execute("SELECT id, name FROM objects WHERE id=?", (obj_id,)).fetchone()
         ctx.user_data["_p"]["object_name"] = obj["name"] if obj else ""
-
+        ctx.user_data["_p"]["object_id"]   = obj_id
     obj_txt = ctx.user_data["_p"]["object_name"] or "не указан"
+    with get_db() as db:
+        bps = db.execute("SELECT id, name FROM bp WHERE active=1 ORDER BY name").fetchall()
+    rows = [[InlineKeyboardButton(b["name"], callback_data=f"PP_BP_{b['id']}")] for b in bps]
+    rows.append([InlineKeyboardButton("Пропустить БП", callback_data="PP_BP_SKIP")])
+    await q.edit_message_text(
+        f"Объект: {obj_txt}\n\n"
+        "Шаг 4 из 8 — Бизнес-процесс:",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+    return P_BP
+
+
+async def p_bp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if q.data == "PP_BP_SKIP":
+        ctx.user_data["_p"]["bp_name"]       = ""
+        ctx.user_data["_p"]["bp_id"]         = None
+        ctx.user_data["_p"]["task_ref_name"] = ""
+        await q.edit_message_text(
+            "Шаг 5 из 8 — Задача\nВведи название задачи вручную:"
+        )
+        return P_TASK
+    bp_id = int(q.data.replace("PP_BP_", ""))
+    with get_db() as db:
+        bp    = db.execute("SELECT name FROM bp WHERE id=?", (bp_id,)).fetchone()
+        tasks = db.execute(
+            "SELECT id, name FROM tasks_ref WHERE bp_id=? AND active=1 ORDER BY name",
+            (bp_id,)
+        ).fetchall()
+    ctx.user_data["_p"]["bp_name"] = bp["name"] if bp else ""
+    ctx.user_data["_p"]["bp_id"]   = bp_id
+    rows = [[InlineKeyboardButton(t["name"], callback_data=f"PP_T_{t['id']}")] for t in tasks]
+    rows.append([InlineKeyboardButton("✏️ Ввести вручную", callback_data="PP_T_CUSTOM")])
+    await q.edit_message_text(
+        f"БП: {ctx.user_data['_p']['bp_name']}\n\n"
+        "Шаг 5 из 8 — Задача:",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+    return P_TASK
+
+
+async def p_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if q.data == "PP_T_CUSTOM":
+        await q.edit_message_text("Введи название задачи:")
+        return P_TASK
+    task_id = int(q.data.replace("PP_T_", ""))
+    with get_db() as db:
+        t = db.execute("SELECT name FROM tasks_ref WHERE id=?", (task_id,)).fetchone()
+    ctx.user_data["_p"]["task_ref_name"] = t["name"] if t else ""
+    return await _p_to_assignee(update.callback_query, ctx)
+
+
+async def p_task_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["_p"]["task_ref_name"] = update.message.text.strip()
+    return await _p_to_assignee(update.message, ctx)
+
+
+async def _p_to_assignee(src_obj, ctx):
+    task_name = (ctx.user_data["_p"].get("task_ref_name") or
+                 ctx.user_data["_p"].get("title", ""))
     with get_db() as db:
         names = db.execute(
             "SELECT DISTINCT employee_name FROM work_log ORDER BY employee_name LIMIT 8"
         ).fetchall()
     rows = [[InlineKeyboardButton(n["employee_name"], callback_data=f"PA_{n['employee_name']}")] for n in names]
     rows.append([InlineKeyboardButton("✏️ Ввести имя вручную", callback_data="PA_CUSTOM")])
-    await q.edit_message_text(
-        f"Объект: {obj_txt}\n\n"
-        "Шаг 3 из 5 — Исполнитель:",
-        reply_markup=InlineKeyboardMarkup(rows),
-    )
+    text = f"Задача: {task_name}\n\nШаг 6 из 8 — Исполнитель:"
+    if hasattr(src_obj, "edit_message_text"):
+        await src_obj.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows))
+    else:
+        await src_obj.reply_text(text, reply_markup=InlineKeyboardMarkup(rows))
     return P_ASSIGNEE
 
 
@@ -1284,10 +1413,10 @@ async def p_assignee_btn(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["_p"]["assignee_tg_id"] = row["employee_tg_id"] if row else ""
     await q.edit_message_text(
         f"Исполнитель: {name}\n\n"
-        "Шаг 4 из 5 — Дата\n"
-        "Введи: сегодня / завтра / ДД.ММ.ГГГГ"
+        "Шаг 7 из 8 — Время начала (ЧЧ:ММ)\n"
+        "Или - чтобы пропустить:"
     )
-    return P_DATE
+    return P_TIME_START
 
 
 async def p_assignee_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1296,58 +1425,65 @@ async def p_assignee_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["_p"]["assignee_tg_id"] = ""
     await update.message.reply_text(
         f"Исполнитель: {name}\n\n"
-        "Шаг 4 из 5 — Дата\n"
-        "Введи: сегодня / завтра / ДД.ММ.ГГГГ"
+        "Шаг 7 из 8 — Время начала (ЧЧ:ММ)\n"
+        "Или - чтобы пропустить:"
     )
-    return P_DATE
+    return P_TIME_START
 
 
-async def p_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    from datetime import timedelta
-    text = update.message.text.strip().lower()
-    if text in ("сегодня", "today"):
-        date_str = datetime.now().strftime("%d.%m.%Y")
-    elif text in ("завтра", "tomorrow"):
-        date_str = (datetime.now() + timedelta(days=1)).strftime("%d.%m.%Y")
-    else:
-        try:
-            date_str = datetime.strptime(text, "%d.%m.%Y").strftime("%d.%m.%Y")
-        except ValueError:
-            await update.message.reply_text(
-                "Неверный формат. Введи: сегодня / завтра / ДД.ММ.ГГГГ"
-            )
-            return P_DATE
-    ctx.user_data["_p"]["planned_date"] = date_str
-    await update.message.reply_text(
-        f"Дата: {date_str}\n\n"
-        "Шаг 5 из 5 — Время начала\n"
-        "Введи время (ЧЧ:ММ) или - чтобы пропустить:"
-    )
-    return P_TIME
-
-
-async def p_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def p_time_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if text == "-":
-        ctx.user_data["_p"]["planned_time"] = ""
+        ctx.user_data["_p"]["planned_time"]     = ""
+        ctx.user_data["_p"]["planned_time_end"] = ""
+        return await _show_plan_confirm(update.message, ctx)
+    try:
+        datetime.strptime(text, "%H:%M")
+        ctx.user_data["_p"]["planned_time"] = text
+    except ValueError:
+        await update.message.reply_text("Неверный формат. Пример: 09:30 или - пропустить:")
+        return P_TIME_START
+    await update.message.reply_text(
+        f"Начало: {text}\n\n"
+        "Шаг 8 из 8 — Примерное время окончания (ЧЧ:ММ)\n"
+        "Или - пропустить:"
+    )
+    return P_TIME_END
+
+
+async def p_time_end(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if text == "-":
+        ctx.user_data["_p"]["planned_time_end"] = ""
     else:
         try:
             datetime.strptime(text, "%H:%M")
-            ctx.user_data["_p"]["planned_time"] = text
+            ctx.user_data["_p"]["planned_time_end"] = text
         except ValueError:
-            await update.message.reply_text("Неверный формат. Пример: 10:00 или - чтобы пропустить:")
-            return P_TIME
+            await update.message.reply_text("Неверный формат. Пример: 11:00 или - пропустить:")
+            return P_TIME_END
+    return await _show_plan_confirm(update.message, ctx)
 
+
+async def _show_plan_confirm(msg, ctx):
     p = ctx.user_data["_p"]
-    time_line = f"\nВремя:       {p['planned_time']}" if p.get("planned_time") else ""
-    obj_line  = f"\nОбъект:      {p['object_name']}"  if p.get("object_name")  else ""
-    await update.message.reply_text(
-        f"Проверь задачу:\n\n"
-        f"Название:    {p['title']}"
-        f"{obj_line}"
-        f"\nИсполнитель: {p['assignee_name']}"
-        f"\nДата:        {p['planned_date']}"
-        f"{time_line}",
+    lines = ["Проверь задачу:\n",
+             f"Дата:        {p['planned_date']}",
+             f"Название:    {p['title']}"]
+    if p.get("bp_name"):
+        lines.append(f"БП:          {p['bp_name']}")
+    if p.get("task_ref_name"):
+        lines.append(f"Задача:      {p['task_ref_name']}")
+    if p.get("object_name"):
+        lines.append(f"Объект:      {p['object_name']}")
+    lines.append(f"Исполнитель: {p['assignee_name']}")
+    if p.get("planned_time"):
+        t_line = f"Начало:      {p['planned_time']}"
+        if p.get("planned_time_end"):
+            t_line += f"  →  {p['planned_time_end']}"
+        lines.append(t_line)
+    await msg.reply_text(
+        "\n".join(lines),
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Сохранить", callback_data="PC_YES"),
             InlineKeyboardButton("❌ Отменить",  callback_data="PC_NO"),
@@ -1368,6 +1504,7 @@ async def p_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     rec_id = save_plan(p)
     await q.edit_message_text(
         f"Задача #{rec_id} добавлена!\n\n"
+        f"Дата: {p['planned_date']}\n"
         "/tasks — задачи на сегодня\n"
         "/week  — задачи на неделю\n"
         "/plan  — добавить ещё"
@@ -1376,7 +1513,7 @@ async def p_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# Просмотр задач
+# Просмотр задач 
 async def cmd_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     today = datetime.now().strftime("%d.%m.%Y")
     rows  = get_today_plans()
@@ -1419,52 +1556,174 @@ async def cmd_week(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines)[:4096])
 
 
-# Обновление статуса
+# Обновление статуса 
 async def plan_status_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     parts   = q.data.split("_")
+    prefix  = parts[0]  # PS или PF
     action  = parts[1]
     task_id = int(parts[2])
 
+    # Подменю причины невыполнения (PF_)
+    if prefix == "PF":
+        with get_db() as db:
+            row = db.execute("SELECT * FROM planned_tasks WHERE id=?", (task_id,)).fetchone()
+        if not row:
+            return
+        if action == "move":
+            ctx.user_data["_reschedule_id"] = task_id
+            await q.edit_message_text(
+                f"Задача «{row['title']}» — перенос\n\n"
+                "Введи новую дату (сегодня / завтра / ДД.ММ.ГГГГ):"
+            )
+            ctx.user_data["_await_reschedule"] = True
+            return
+        if action == "fix":
+            ctx.user_data["_fail_fix_id"] = task_id
+            await q.edit_message_text(
+                f"Задача «{row['title']}» — нужно исправить\n\n"
+                "Опиши кратко причину, почему не удалось выполнить:"
+            )
+            ctx.user_data["_await_fail_reason"] = True
+            return
+        return
+
+    # Основные кнопки статуса (PS_) 
     if action == "info":
         with get_db() as db:
             row = db.execute("SELECT * FROM planned_tasks WHERE id=?", (task_id,)).fetchone()
         if row:
-            tp = f"\nВремя:      {row['planned_time']}" if row["planned_time"] else ""
-            op = f"\nОбъект:     {row['object_name']}"  if row["object_name"]  else ""
+            tp  = f"\nВремя:       {row['planned_time']}" if row["planned_time"] else ""
+            op  = f"\nОбъект:      {row['object_name']}"  if row["object_name"]  else ""
+            bp  = f"\nБП:          {row['bp_name']}"       if row.get("bp_name")  else ""
+            tsk = f"\nЗадача:      {row['task_ref_name']}" if row.get("task_ref_name") else ""
+            fr  = f"\nПричина:     {row['fail_reason']}"   if row.get("fail_reason") else ""
+            rsc = f"\nПеренесена:  {row['rescheduled_to']}" if row.get("rescheduled_to") else ""
             await q.edit_message_text(
                 f"Задача #{row['id']}\n"
-                f"Название:   {row['title']}"
-                f"{op}"
-                f"\nИсполнитель:{row['assignee_name']}"
-                f"\nДата:       {row['planned_date']}"
+                f"Название:    {row['title']}"
+                f"{bp}{tsk}{op}"
+                f"\nИсполнитель: {row['assignee_name']}"
+                f"\nДата:        {row['planned_date']}"
                 f"{tp}"
-                f"\nСтатус:     {row['status']}"
-                f"\nСогласована:{row['consistency']}",
+                f"\nСтатус:      {row['status']}"
+                f"{fr}{rsc}",
                 reply_markup=plan_status_kb(task_id)
             )
         return
 
-    status_map = {"done":"Выполнена","wip":"В процессе","fail":"Не выполнена"}
-    new_status = status_map.get(action)
-    if not new_status:
+    if action == "done":
+        with get_db() as db:
+            db.execute(
+                "UPDATE planned_tasks SET status='Выполнена', day_status='Выполнена' WHERE id=?",
+                (task_id,)
+            )
+            db.commit()
+            row = db.execute("SELECT title FROM planned_tasks WHERE id=?", (task_id,)).fetchone()
+        await q.edit_message_text(f"✅ #{task_id} {row['title']}\nСтатус: Выполнена")
         return
-    with get_db() as db:
-        db.execute(
-            "UPDATE planned_tasks SET status=?, day_status=? WHERE id=?",
-            (new_status, new_status, task_id)
+
+    if action == "wip":
+        with get_db() as db:
+            db.execute(
+                "UPDATE planned_tasks SET status='В процессе', day_status='В процессе' WHERE id=?",
+                (task_id,)
+            )
+            db.commit()
+            row = db.execute("SELECT title FROM planned_tasks WHERE id=?", (task_id,)).fetchone()
+        await q.edit_message_text(
+            f"🔄 #{task_id} {row['title']}\nСтатус: В процессе",
+            reply_markup=plan_status_kb(task_id)
         )
-        db.commit()
-        row = db.execute("SELECT * FROM planned_tasks WHERE id=?", (task_id,)).fetchone()
-    icon = {"Выполнена":"✅","В процессе":"🔄","Не выполнена":"❌"}.get(new_status,"•")
-    await q.edit_message_text(
-        f"{icon} #{task_id} {row['title']}\n"
-        f"Статус: {new_status}"
-    )
+        return
+
+    if action == "fail":
+        with get_db() as db:
+            db.execute(
+                "UPDATE planned_tasks SET status='Не выполнена', day_status='Не выполнена' WHERE id=?",
+                (task_id,)
+            )
+            db.commit()
+            row = db.execute("SELECT title FROM planned_tasks WHERE id=?", (task_id,)).fetchone()
+        await q.edit_message_text(
+            f"❌ #{task_id} {row['title']}\nСтатус: Не выполнена\n\nЧто делаем?",
+            reply_markup=fail_reason_kb(task_id)
+        )
+        return
 
 
-# Статистика для администратора
+async def handle_reschedule_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает текстовый ввод для переноса / причины."""
+    if ctx.user_data.get("_await_reschedule"):
+        task_id  = ctx.user_data.pop("_reschedule_id", None)
+        ctx.user_data.pop("_await_reschedule", None)
+        date_str = _date_from_text(update.message.text)
+        if not date_str:
+            await update.message.reply_text(
+                "Неверный формат. Введи: сегодня / завтра / ДД.ММ.ГГГГ"
+            )
+            ctx.user_data["_await_reschedule"] = True
+            ctx.user_data["_reschedule_id"]    = task_id
+            return
+        if _is_past_date(date_str):
+            await update.message.reply_text(
+                f"Дата {date_str} уже прошла. Введи будущую дату:"
+            )
+            ctx.user_data["_await_reschedule"] = True
+            ctx.user_data["_reschedule_id"]    = task_id
+            return
+        with get_db() as db:
+            row = db.execute("SELECT * FROM planned_tasks WHERE id=?", (task_id,)).fetchone()
+        if not row:
+            await update.message.reply_text("Задача не найдена.")
+            return
+        # Создаём новую запись на новую дату
+        new_d = {
+            "title":          row["title"],
+            "object_name":    row["object_name"],
+            "assignee_name":  row["assignee_name"],
+            "assignee_tg_id": row["assignee_tg_id"],
+            "planned_date":   date_str,
+            "planned_time":   row["planned_time"],
+            "bp_name":        row.get("bp_name", ""),
+            "task_ref_name":  row.get("task_ref_name", ""),
+            "created_by":     update.effective_user.full_name or "",
+        }
+        new_id = save_plan(new_d)
+        with get_db() as db:
+            db.execute(
+                "UPDATE planned_tasks SET rescheduled_to=? WHERE id=?",
+                (date_str, task_id)
+            )
+            db.commit()
+        await update.message.reply_text(
+            f"Задача перенесена на {date_str}.\n"
+            f"Создана новая запись #{new_id}.\n"
+            "/week — посмотреть расписание"
+        )
+        return
+
+    if ctx.user_data.get("_await_fail_reason"):
+        task_id = ctx.user_data.pop("_fail_fix_id", None)
+        ctx.user_data.pop("_await_fail_reason", None)
+        reason  = update.message.text.strip()
+        with get_db() as db:
+            db.execute(
+                "UPDATE planned_tasks SET fail_reason=? WHERE id=?",
+                (reason, task_id)
+            )
+            db.commit()
+            row = db.execute("SELECT title FROM planned_tasks WHERE id=?", (task_id,)).fetchone()
+        await update.message.reply_text(
+            f"Причина зафиксирована для задачи «{row['title'] if row else task_id}»:\n"
+            f"{reason}\n\n"
+            "Задача помечена как требующая исправления."
+        )
+        return
+
+
+# Статистика для администратора 
 async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Нет доступа.")
@@ -1547,15 +1806,21 @@ def build_app() -> Application:
     plan_conv = ConversationHandler(
         entry_points=[CommandHandler("plan", cmd_plan)],
         states={
-            P_TITLE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, p_title)],
-            P_OBJECT:   [CallbackQueryHandler(p_object, pattern="^PO_")],
+            P_DATE:       [MessageHandler(filters.TEXT & ~filters.COMMAND, p_date)],
+            P_TITLE:      [MessageHandler(filters.TEXT & ~filters.COMMAND, p_title)],
+            P_OBJECT:     [CallbackQueryHandler(p_object, pattern="^PO_")],
+            P_BP:         [CallbackQueryHandler(p_bp,     pattern="^PP_BP_")],
+            P_TASK: [
+                CallbackQueryHandler(p_task,     pattern="^PP_T_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, p_task_text),
+            ],
             P_ASSIGNEE: [
                 CallbackQueryHandler(p_assignee_btn, pattern="^PA_"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, p_assignee_text),
             ],
-            P_DATE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, p_date)],
-            P_TIME:     [MessageHandler(filters.TEXT & ~filters.COMMAND, p_time)],
-            P_CONFIRM:  [CallbackQueryHandler(p_confirm, pattern="^PC_")],
+            P_TIME_START: [MessageHandler(filters.TEXT & ~filters.COMMAND, p_time_start)],
+            P_TIME_END:   [MessageHandler(filters.TEXT & ~filters.COMMAND, p_time_end)],
+            P_CONFIRM:    [CallbackQueryHandler(p_confirm, pattern="^PC_")],
         },
         fallbacks=[CommandHandler("cancel", cmd_cancel)],
         allow_reentry=True,
@@ -1571,6 +1836,10 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("help",  cmd_help))
     app.add_handler(CommandHandler("info",  cmd_info))
     app.add_handler(CallbackQueryHandler(plan_status_handler, pattern="^PS_"))
+    app.add_handler(CallbackQueryHandler(plan_status_handler, pattern="^PF_"))
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, handle_reschedule_text
+    ))
     return app
 
 
