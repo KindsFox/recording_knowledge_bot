@@ -502,8 +502,8 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "\n\n"
             "Команды администратора:\n"
             "/admin  — панель управления (объекты, БП, выгрузка Excel)\n"
-            "/stats  — статистика выполнения задач за сегодня"
             "/templates — управление шаблонами задач\n"
+            "/stats  — статистика выполнения задач за сегодня"            
         )
     await update.message.reply_text(text)
 
