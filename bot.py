@@ -502,8 +502,8 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "\n\n"
             "Команды администратора:\n"
             "/admin  — панель управления (объекты, БП, выгрузка Excel)\n"
+            "/stats  — статистика выполнения задач за сегодня"
             "/templates — управление шаблонами задач\n"
-            "/stats  — статистика выполнения задач за сегодня"            
         )
     await update.message.reply_text(text)
 
@@ -990,11 +990,9 @@ async def adm_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if d == "A_TMPL_HINT":
         await q.edit_message_text(
-            "Для управления шаблонами используй команду /templates\n\n"
-            "Выбери действие:",
-            reply_markup=amenu_kb()
+            "Используй команду /templates для управления шаблонами"
         )
-        return A_MENU
+        return ConversationHandler.END
 
     if d == "A_BACK":
         await q.edit_message_text("Выбери действие:", reply_markup=amenu_kb())
