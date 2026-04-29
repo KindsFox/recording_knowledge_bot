@@ -2,7 +2,7 @@
 templates_module.py
 ===================
 Модуль шаблонов задач для Telegram-бота.
- 
+
 СТРУКТУРА ШАБЛОНА:
   Шаблон = набор шагов (БП → Задача → Процедура).
   Каждый шаг — одна строка в task_template_steps.
@@ -284,7 +284,7 @@ async def tmpl_admin_add_step(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Выбор БП для нового шага."""
     await update.callback_query.answer()
     bps    = _get_bps()
-    kb_rows = [[( b["name"], f"tbp_{b['id']}_{b['name']}")] for b in bps]
+    kb_rows = [[(b["name"], f"tbp_{b['id']}")] for b in bps]
     kb_rows.append([("❌ Отмена", "tmpl_cancel")])
     await update.callback_query.edit_message_text(
         "Выбери бизнес-процесс для шага:",
@@ -296,10 +296,12 @@ async def tmpl_admin_add_step(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def tmpl_admin_step_bp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Получили БП — показываем задачи."""
     await update.callback_query.answer()
-    data   = update.callback_query.data  # tbp_{id}_{name}
-    parts  = data.split("_", 2)
-    bp_id  = int(parts[1])
-    bp_name = parts[2]
+    data   = update.callback_query.data
+    bp_id  = int(data.split("_")[1])
+    _dbc = _db()
+    _bpr = _dbc.execute("SELECT name FROM bp WHERE id=?", (bp_id,)).fetchone()
+    _dbc.close()
+    bp_name = _bpr["name"] if _bpr else str(bp_id)
     ctx.user_data["step_bp"] = {"id": bp_id, "name": bp_name}
 
     tasks = _get_tasks(bp_id)
@@ -309,7 +311,7 @@ async def tmpl_admin_step_bp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return await _tmpl_admin_show_add_step(update, ctx)
 
-    kb_rows = [[(t["name"], f"ttask_{t['id']}_{t['name']}")] for t in tasks]
+    kb_rows = [[(t["name"], f"ttask_{t['id']}")] for t in tasks]
     kb_rows.append([("◀️ Назад", "tmpl_add_step")])
     await update.callback_query.edit_message_text(
         f"БП: *{bp_name}*\nВыбери задачу:",
@@ -322,18 +324,20 @@ async def tmpl_admin_step_bp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def tmpl_admin_step_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Получили задачу — показываем процедуры."""
     await update.callback_query.answer()
-    data    = update.callback_query.data  # ttask_{id}_{name}
-    parts   = data.split("_", 2)
-    task_id = int(parts[1])
-    task_name = parts[2]
+    data    = update.callback_query.data
+    task_id = int(data.split("_")[1])
+    _dbc2 = _db()
+    _tr = _dbc2.execute("SELECT name FROM tasks_ref WHERE id=?", (task_id,)).fetchone()
+    _dbc2.close()
+    task_name = _tr["name"] if _tr else str(task_id)
     ctx.user_data["step_task"] = {"id": task_id, "name": task_name}
 
     procs = _get_procs(task_id)
     kb_rows = []
     if procs:
-        kb_rows = [[(p["name"], f"tproc_{p['id']}_{p['name']}")] for p in procs]
+        kb_rows = [[(p["name"], f"tproc_{p['id']}")] for p in procs]
     kb_rows.append([("— Без процедуры", "tproc_0_")])
-    kb_rows.append([("◀️ Назад", f"tbp_{ctx.user_data['step_bp']['id']}_{ctx.user_data['step_bp']['name']}")])
+    kb_rows.append([("◀️ Назад", f"tbp_{ctx.user_data['step_bp']['id']}")])   
 
     await update.callback_query.edit_message_text(
         f"Задача: *{task_name}*\nВыбери процедуру (опционально):",
@@ -346,10 +350,12 @@ async def tmpl_admin_step_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def tmpl_admin_step_proc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Получили процедуру — добавляем шаг и возвращаемся."""
     await update.callback_query.answer()
-    data  = update.callback_query.data  # tproc_{id}_{name}
-    parts = data.split("_", 2)
-    proc_id   = int(parts[1])
-    proc_name = parts[2] if len(parts) > 2 else ""
+    data    = update.callback_query.data
+    proc_id = int(data.split("_")[1])
+    _dbc3 = _db()
+    _pr = _dbc3.execute("SELECT name FROM procedures WHERE id=?", (proc_id,)).fetchone()
+    _dbc3.close()
+    proc_name = _pr["name"] if _pr and proc_id > 0 else ""
 
     bp   = ctx.user_data["step_bp"]
     task = ctx.user_data["step_task"]
