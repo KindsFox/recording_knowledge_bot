@@ -15,6 +15,12 @@ from telegram.ext import (
     ContextTypes, ConversationHandler, MessageHandler, filters,
 )
 
+from templates_module import (
+    get_template_handlers,
+    get_admin_template_handlers,
+    init_templates_db,
+)
+
 # Конфиг
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
@@ -114,6 +120,7 @@ def init_db():
         if not db.execute("SELECT 1 FROM bp LIMIT 1").fetchone():
             _seed(db)
         db.commit()
+        init_templates_db(db)
 
 
 def _seed(db):
@@ -878,6 +885,7 @@ def amenu_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("Добавить процедуру", callback_data="A_PROC")],
         [InlineKeyboardButton("Справочник БП",      callback_data="A_LBP")],
         [InlineKeyboardButton("Выгрузить Excel",    callback_data="A_XLSX")],
+        [InlineKeyboardButton("Шаблоны задач",   callback_data="admin_templates")],
     ])
 
 
@@ -1908,6 +1916,12 @@ def build_app() -> Application:
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND, handle_reschedule_text
     ))
+
+    for h in get_template_handlers():
+        app.add_handler(h)
+    for h in get_admin_template_handlers():
+        app.add_handler(h)
+
     return app
 
 
