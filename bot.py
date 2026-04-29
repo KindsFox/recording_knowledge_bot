@@ -489,7 +489,7 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Доступные команды:\n"
         "\n"
         "/start  — зафиксировать выполненную задачу\n"
-        "/template  — применить шаблон"
+        "/template  — применить шаблон\n"
         "/plan   — добавить задачу в расписание\n"
         "/tasks  — задачи на сегодня (с кнопками статуса)\n"
         "/week   — задачи на ближайшие 7 дней\n"
@@ -1931,14 +1931,14 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("info",  cmd_info))
     app.add_handler(CallbackQueryHandler(plan_status_handler, pattern="^PS_"))
     app.add_handler(CallbackQueryHandler(plan_status_handler, pattern="^PF_"))
-    app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, handle_reschedule_text
-    ))
-
     for h in get_template_handlers():
         app.add_handler(h)
     for h in get_admin_template_handlers():
         app.add_handler(h)
+
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, handle_reschedule_text
+    ))
 
     return app
 
