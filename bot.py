@@ -489,6 +489,7 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Доступные команды:\n"
         "\n"
         "/start  — зафиксировать выполненную задачу\n"
+        "/template  — применить шаблон"
         "/plan   — добавить задачу в расписание\n"
         "/tasks  — задачи на сегодня (с кнопками статуса)\n"
         "/week   — задачи на ближайшие 7 дней\n"
@@ -502,6 +503,7 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "Команды администратора:\n"
             "/admin  — панель управления (объекты, БП, выгрузка Excel)\n"
             "/stats  — статистика выполнения задач за сегодня"
+            "/templates — управление шаблонами задач\n"
         )
     await update.message.reply_text(text)
 
@@ -885,7 +887,7 @@ def amenu_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("Добавить процедуру", callback_data="A_PROC")],
         [InlineKeyboardButton("Справочник БП",      callback_data="A_LBP")],
         [InlineKeyboardButton("Выгрузить Excel",    callback_data="A_XLSX")],
-        [InlineKeyboardButton("Шаблоны задач",   callback_data="admin_templates")],
+        [InlineKeyboardButton("Шаблоны задач",   callback_data="A_TMPL_HINT")],
     ])
 
 
@@ -985,6 +987,14 @@ async def adm_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="A_BACK")]])
         )
         return A_MENU
+
+    if d == "A_TMPL_HINT":
+        await q.edit_message_text(
+            "Для управления шаблонами используй команду /templates\n\n"
+            "Выбери действие:",
+            reply_markup=amenu_kb()
+        )
+    return A_MENU
 
     if d == "A_BACK":
         await q.edit_message_text("Выбери действие:", reply_markup=amenu_kb())
@@ -1833,6 +1843,14 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines.append("\n/tasks — задачи на сегодня\n/week — задачи на неделю")
     await update.message.reply_text("\n".join(lines))
 
+async def admin_templates_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("Нет доступа.")
+        return
+    # Импортируем и вызываем меню шаблонов
+    from templates_module import admin_templates_menu
+    await admin_templates_menu(update, ctx)
+
 def build_app() -> Application:
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
@@ -1901,6 +1919,8 @@ def build_app() -> Application:
         fallbacks=[CommandHandler("cancel", cmd_cancel)],
         allow_reentry=True,
     )
+
+    app.add_handler(CommandHandler("templates", admin_templates_cmd))
 
     _start_scheduler(app)
     app.add_handler(user_conv)
