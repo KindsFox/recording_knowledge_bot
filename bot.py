@@ -502,8 +502,8 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "\n\n"
             "Команды администратора:\n"
             "/admin  — панель управления (объекты, БП, выгрузка Excel)\n"
-            "/stats  — статистика выполнения задач за сегодня\n"
             "/templates — управление шаблонами задач\n"
+            "/stats  — статистика выполнения задач за сегодня"            
         )
     await update.message.reply_text(text)
 
@@ -996,11 +996,11 @@ async def adm_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return A_MENU
 
-    if d == "A_BACK":     
+    if d == "A_BACK":
         await q.edit_message_text("Выбери действие:", reply_markup=amenu_kb())
         return A_MENU
 
-        return A_MENU
+    return A_MENU
 
 
 async def adm_obj_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
