@@ -2,7 +2,7 @@
 templates_module.py
 ===================
 Модуль шаблонов задач для Telegram-бота.
-
+ 
 СТРУКТУРА ШАБЛОНА:
   Шаблон = набор шагов (БП → Задача → Процедура).
   Каждый шаг — одна строка в task_template_steps.
@@ -27,6 +27,8 @@ from telegram.ext import (
     filters,
 )
 
+# Состояния машины состояний 
+# Администратор создаёт шаблон
 (
     TMPL_ADMIN_NAME,        # вводит название шаблона
     TMPL_ADMIN_DESC,        # описание (опционально)
@@ -34,7 +36,7 @@ from telegram.ext import (
     TMPL_ADMIN_STEP_TASK,   # выбирает задачу
     TMPL_ADMIN_STEP_PROC,   # выбирает процедуру
     TMPL_ADMIN_CONFIRM,     # подтверждает сохранение
-) = range(100, 106)
+) = range(1000, 1006)
 
 # Пользователь применяет шаблон
 (
@@ -45,7 +47,7 @@ from telegram.ext import (
     TMPL_USER_TIME_SINGLE,  # единое время начала и окончания
     TMPL_USER_TIME_EACH,    # время для каждого шага отдельно
     TMPL_USER_CONFIRM,      # подтверждение
-) = range(200, 207)
+) = range(1100, 1107)
 
 DB_PATH = Path(__file__).parent / "tasks.db"
 
@@ -371,7 +373,7 @@ async def tmpl_admin_save(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     steps = tmpl.get("steps", [])
 
     if not steps:
-        await update.callback_query.edit_message_text("Нельзя сохранить пустой шаблон.")
+        await update.callback_query.edit_message_text("⚠️ Нельзя сохранить пустой шаблон.")
         return ConversationHandler.END
 
     db  = _db()
@@ -501,7 +503,7 @@ async def tmpl_user_picked(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     objects = _get_objects()
     if not objects:
         await update.callback_query.edit_message_text(
-            "Нет объектов. Добавь через /admin → Объекты."
+            "⚠️ Нет объектов. Добавь через /admin → Объекты."
         )
         return ConversationHandler.END
 
