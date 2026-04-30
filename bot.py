@@ -1664,10 +1664,10 @@ async def plan_status_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if row:
             tp  = f"\nВремя:       {row['planned_time']}" if row["planned_time"] else ""
             op  = f"\nОбъект:      {row['object_name']}"  if row["object_name"]  else ""
-            bp  = f"\nБП:          {row[15]}" if row[15] else ""
-            tsk = f"\nЗадача:      {row[16]}" if row[16] else ""
-            fr  = f"\nПричина:     {row[17]}" if row[17] else ""
-            rsc = f"\nПеренесена:  {row[18]}" if row[18] else ""
+            bp  = f"\nБП:          {row['bp_name']}"        if row['bp_name']        else ""
+            tsk = f"\nЗадача:      {row['task_ref_name']}"  if row['task_ref_name']  else ""
+            fr  = f"\nПричина:     {row['fail_reason']}"    if row['fail_reason']    else ""
+            rsc = f"\nПеренесена:  {row['rescheduled_to']}" if row['rescheduled_to'] else ""
             await q.edit_message_text(
                 f"Задача #{row['id']}\n"
                 f"Название:    {row['title']}"
