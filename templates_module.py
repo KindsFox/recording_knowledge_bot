@@ -759,11 +759,11 @@ def get_admin_template_handlers():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, tmpl_admin_got_desc),
             ],
             TMPL_ADMIN_ADD_STEP: [
-                CallbackQueryHandler(tmpl_admin_step_bp, pattern=r"^tbp_\d+_"),
+                CallbackQueryHandler(tmpl_admin_step_bp, pattern=r"^tbp_\d+"),
                 CallbackQueryHandler(tmpl_admin_add_step, pattern="^tmpl_add_step$"),
             ],
             TMPL_ADMIN_STEP_TASK: [
-                CallbackQueryHandler(tmpl_admin_step_task, pattern=r"^ttask_\d+_"),
+                CallbackQueryHandler(tmpl_admin_step_task, pattern=r"^ttask_\d+"),
                 CallbackQueryHandler(tmpl_admin_add_step, pattern="^tmpl_add_step$"),
             ],
             TMPL_ADMIN_STEP_PROC: [
