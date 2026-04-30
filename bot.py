@@ -96,7 +96,7 @@ def init_db():
             description    TEXT DEFAULT '',
             created_at     TEXT DEFAULT ''
         );
-        CREATE TABLE IF NOT EXISTS planned_tasks (
+       CREATE TABLE IF NOT EXISTS planned_tasks (
             id             INTEGER PRIMARY KEY AUTOINCREMENT,
             title          TEXT NOT NULL,
             object_name    TEXT DEFAULT '',
@@ -104,6 +104,7 @@ def init_db():
             assignee_tg_id TEXT DEFAULT '',
             planned_date   TEXT NOT NULL,
             planned_time   TEXT DEFAULT '',
+            planned_time_end TEXT DEFAULT '',
             status         TEXT DEFAULT 'Запланирована',
             day_status     TEXT DEFAULT '',
             consistency    TEXT DEFAULT 'Согласована',
