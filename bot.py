@@ -96,32 +96,45 @@ def init_db():
             description    TEXT DEFAULT '',
             created_at     TEXT DEFAULT ''
         );
-       CREATE TABLE IF NOT EXISTS planned_tasks (
-            id             INTEGER PRIMARY KEY AUTOINCREMENT,
-            title          TEXT NOT NULL,
-            object_name    TEXT DEFAULT '',
-            assignee_name  TEXT NOT NULL,
-            assignee_tg_id TEXT DEFAULT '',
-            planned_date   TEXT NOT NULL,
-            planned_time   TEXT DEFAULT '',
+        CREATE TABLE IF NOT EXISTS planned_tasks (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            title            TEXT NOT NULL,
+            object_name      TEXT DEFAULT '',
+            assignee_name    TEXT NOT NULL,
+            assignee_tg_id   TEXT DEFAULT '',
+            planned_date     TEXT NOT NULL,
+            planned_time     TEXT DEFAULT '',
             planned_time_end TEXT DEFAULT '',
-            status         TEXT DEFAULT 'Запланирована',
-            day_status     TEXT DEFAULT '',
-            consistency    TEXT DEFAULT 'Согласована',
-            created_by     TEXT DEFAULT '',
-            created_at     TEXT DEFAULT '',
-            reminded_2h    INTEGER DEFAULT 0,
-            reminded_day   INTEGER DEFAULT 0,
-            bp_name        TEXT DEFAULT '',
-            task_ref_name  TEXT DEFAULT '',
-            fail_reason    TEXT DEFAULT '',
-            rescheduled_to TEXT DEFAULT ''
+            status           TEXT DEFAULT 'Запланирована',
+            day_status       TEXT DEFAULT '',
+            consistency      TEXT DEFAULT 'Согласована',
+            created_by       TEXT DEFAULT '',
+            created_at       TEXT DEFAULT '',
+            reminded_2h      INTEGER DEFAULT 0,
+            reminded_day     INTEGER DEFAULT 0,
+            bp_name          TEXT DEFAULT '',
+            task_ref_name    TEXT DEFAULT '',
+            fail_reason      TEXT DEFAULT '',
+            rescheduled_to   TEXT DEFAULT ''
         );
         """)
         if not db.execute("SELECT 1 FROM bp LIMIT 1").fetchone():
             _seed(db)
         db.commit()
         init_templates_db(db)
+        # Миграция — добавляем колонки если их нет в существующей БД
+        for col in [
+            "planned_time_end TEXT DEFAULT ''",
+            "bp_name TEXT DEFAULT ''",
+            "task_ref_name TEXT DEFAULT ''",
+            "fail_reason TEXT DEFAULT ''",
+            "rescheduled_to TEXT DEFAULT ''",
+        ]:
+            try:
+                db.execute(f"ALTER TABLE planned_tasks ADD COLUMN {col}")
+            except Exception:
+                pass
+        db.commit()
 
 
 def _seed(db):
