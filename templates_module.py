@@ -49,7 +49,7 @@ from telegram.ext import (
     TMPL_USER_CONFIRM,      # подтверждение
 ) = range(1100, 1107)
 
-DB_PATH = Path(__file__).parent / "tasks.db"
+DB_PATH = Path(__file__).parent / "data" / "tasks.db"
 
 
 # ИНИЦИАЛИЗАЦИЯ БД
